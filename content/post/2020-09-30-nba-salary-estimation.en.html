@@ -13,6 +13,9 @@ images: ~
 <link href="/rmarkdown-libs/lightable/lightable.css" rel="stylesheet" />
 
 
+<blockquote>
+<p>I use k-nearest neighbors regression to estimate fair salaries for NBA players based on the market for players of a similar caliber. I re-predict on the training set (gasp!), but use leave-one-out predictions to prevent severe overfitting. I argue that it is counterproductive to perform a test-train split when re-predicting on the training set because this will make predictions on the test set less accurate. I argue that using sophisticated ensemble learning methods is overkill, and less interpretable and useful than a simpler method such as k-nearest neighbors.</p>
+</blockquote>
 <p>How much should Player X make?</p>
 <p>As I was searching for existing analyses, I came across <a href="https://medium.com/@pipkinlewis/using-machine-learning-to-diagnose-nba-contract-amount-5b163cca648d">Lewis Pipkin’s use of machine learning</a>. I will address some mistakes I think he made in his analysis.</p>
 <ol style="list-style-type: decimal">
@@ -115,7 +118,7 @@ rmse
 standard
 </td>
 <td style="text-align:right;">
-6.821924e+06
+5858023.2177100
 </td>
 </tr>
 <tr>
@@ -126,7 +129,7 @@ rsq
 standard
 </td>
 <td style="text-align:right;">
-5.328346e-01
+0.6202207
 </td>
 </tr>
 <tr>
@@ -137,7 +140,7 @@ mae
 standard
 </td>
 <td style="text-align:right;">
-5.073639e+06
+4409872.4310345
 </td>
 </tr>
 </tbody>
@@ -174,7 +177,7 @@ rmse
 standard
 </td>
 <td style="text-align:right;">
-2.517985e+06
+2724495.0727933
 </td>
 </tr>
 <tr>
@@ -185,7 +188,7 @@ rsq
 standard
 </td>
 <td style="text-align:right;">
-9.517036e-01
+0.9479134
 </td>
 </tr>
 <tr>
@@ -196,7 +199,7 @@ mae
 standard
 </td>
 <td style="text-align:right;">
-1.912592e+06
+2063582.5430068
 </td>
 </tr>
 </tbody>
@@ -259,18 +262,18 @@ calc_rf_results = function(dataset) {
 <p>We examine the best and worse case scenarios from the simulation.</p>
 <pre class="r"><code>mae_diff = test_metrics$mae - train_metrics$mae
 mae_diff[which.min(mae_diff)]</code></pre>
-<pre><code>## [1] 1787587</code></pre>
-<p>In the best case, the MAE on the test set is 1.787586610^{6} more than the training set MAE.</p>
+<pre><code>## [1] 1703556</code></pre>
+<p>In the best case, the MAE on the test set is 1703555.6759256 more than the training set MAE.</p>
 <pre class="r"><code>mae_diff[which.max(mae_diff)]</code></pre>
-<pre><code>## [1] 4367172</code></pre>
-<p>In the worst case, the MAE on the test set is 4.367171510^{6} more than the training set MAE.</p>
+<pre><code>## [1] 3968288</code></pre>
+<p>In the worst case, the MAE on the test set is 3968287.5656807 more than the training set MAE.</p>
 <pre class="r"><code>colMeans(test_metrics)</code></pre>
-<pre><code>##         rmse          rsq          mae 
-## 6.398542e+06 5.562743e-01 4.883149e+06</code></pre>
+<pre><code>##           rmse            rsq            mae 
+## 6355650.542972       0.564976 4822930.531444</code></pre>
 <pre class="r"><code>colMeans(train_metrics)</code></pre>
-<pre><code>##         rmse          rsq          mae 
-## 2.629864e+06 9.491286e-01 1.967134e+06</code></pre>
-<p>If you did Pipkin’s analysis, I would expect you to claim a player from the test set is being overpaid or underpaid by an additional 2.916014710^{6} simply because he is in the test set. In other words, you would claim larger errors simply due to chance. This is bad, so I would like to prevent this.</p>
+<pre><code>##            rmse             rsq             mae 
+## 2632310.7877772       0.9496222 1970664.2368478</code></pre>
+<p>If you did Pipkin’s analysis, I would expect you to claim a player from the test set is being overpaid or underpaid by an additional 2852266.2945958 simply because he is in the test set. In other words, you would claim larger errors simply due to chance. This is bad, so I would like to prevent this.</p>
 <ol start="2" style="list-style-type: decimal">
 <li>(less important) He used a random forest.</li>
 </ol>
