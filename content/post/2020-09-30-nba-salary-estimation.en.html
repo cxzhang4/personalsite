@@ -115,7 +115,7 @@ rmse
 standard
 </td>
 <td style="text-align:right;">
-6.526161e+06
+6.821924e+06
 </td>
 </tr>
 <tr>
@@ -126,7 +126,7 @@ rsq
 standard
 </td>
 <td style="text-align:right;">
-6.024526e-01
+5.328346e-01
 </td>
 </tr>
 <tr>
@@ -137,7 +137,7 @@ mae
 standard
 </td>
 <td style="text-align:right;">
-5.256946e+06
+5.073639e+06
 </td>
 </tr>
 </tbody>
@@ -174,7 +174,7 @@ rmse
 standard
 </td>
 <td style="text-align:right;">
-2.580246e+06
+2.517985e+06
 </td>
 </tr>
 <tr>
@@ -185,7 +185,7 @@ rsq
 standard
 </td>
 <td style="text-align:right;">
-9.527626e-01
+9.517036e-01
 </td>
 </tr>
 <tr>
@@ -196,7 +196,7 @@ mae
 standard
 </td>
 <td style="text-align:right;">
-1.902528e+06
+1.912592e+06
 </td>
 </tr>
 </tbody>
@@ -259,18 +259,18 @@ calc_rf_results = function(dataset) {
 <p>We examine the best and worse case scenarios from the simulation.</p>
 <pre class="r"><code>mae_diff = test_metrics$mae - train_metrics$mae
 mae_diff[which.min(mae_diff)]</code></pre>
-<pre><code>## [1] 956022.1</code></pre>
-<p>In the best case, the MAE on the test set is 9.560221410^{5} more than the training set MAE.</p>
+<pre><code>## [1] 1787587</code></pre>
+<p>In the best case, the MAE on the test set is 1.787586610^{6} more than the training set MAE.</p>
 <pre class="r"><code>mae_diff[which.max(mae_diff)]</code></pre>
-<pre><code>## [1] 4395742</code></pre>
-<p>In the worst case, the MAE on the test set is 4.39574210^{6} more than the training set MAE.</p>
+<pre><code>## [1] 4367172</code></pre>
+<p>In the worst case, the MAE on the test set is 4.367171510^{6} more than the training set MAE.</p>
 <pre class="r"><code>colMeans(test_metrics)</code></pre>
 <pre><code>##         rmse          rsq          mae 
-## 6.404734e+06 5.330805e-01 4.848531e+06</code></pre>
+## 6.398542e+06 5.562743e-01 4.883149e+06</code></pre>
 <pre class="r"><code>colMeans(train_metrics)</code></pre>
 <pre><code>##         rmse          rsq          mae 
-## 2.607140e+06 9.508443e-01 1.954856e+06</code></pre>
-<p>If you did Pipkin’s analysis, I would expect you to claim a player from the test set is being overpaid or underpaid by an additional 2.893675510^{6} simply because he is in the test set. In other words, you would claim larger errors simply due to chance. This is bad, so I would like to prevent this.</p>
+## 2.629864e+06 9.491286e-01 1.967134e+06</code></pre>
+<p>If you did Pipkin’s analysis, I would expect you to claim a player from the test set is being overpaid or underpaid by an additional 2.916014710^{6} simply because he is in the test set. In other words, you would claim larger errors simply due to chance. This is bad, so I would like to prevent this.</p>
 <ol start="2" style="list-style-type: decimal">
 <li>(less important) He used a random forest.</li>
 </ol>
@@ -1943,7 +1943,22 @@ Cody Zeller01
 </tbody>
 </table>
 </div>
+<div id="problems" class="section level2">
+<h2>Problems</h2>
+<ul>
+<li><p>Lack of tuning. <code>k</code>= 5 is arbitrary, so I would like to be able to tune it. But tuning based on accuracy would be bad IMO because it presents the actual values as ground truth (i.e. what people <em>should</em> be paid): this is actually the opposite of what we are claiming with this analysis.</p></li>
+<li><p>A different model for each observation. AFAIK, this is non-standard: usually, you would have one model, and that model would be flexible if you wanted to account for variation in observations. Even if multiple models were used, using a different model for each observation definitely seems extreme. However, removing one observation from the training set shouldn’t make a large difference in the model. Furthermore, the adjustment has an obvious benefit here because it prevents the problem of using the observation’s own response value as a nearest neighbor.</p></li>
+<li><p>Re-predicting on the training set. Despite all of the adjustments we’ve made, I’m still concerned that we’re fitting noise here.</p></li>
+</ul>
+</div>
 <div id="conclusion" class="section level2">
 <h2>Conclusion</h2>
 <p>It’s possible that my method is terrible too (if you think it is, please let me know!). But the thing I want to emphasize: if you know you want to re-predict on your training set, DO NOT perform a “test-train” split on your training set.</p>
+</div>
+<div id="spitballing-a-way-to-tune-k-without-looking-at-the-response-value" class="section level2">
+<h2>Spitballing: a way to tune k without looking at the response value?</h2>
+<p>Cluster the players. Use their cluster memberships to determine the value of <code>k</code> for k-nn regression.</p>
+<p>Suppose a player is in cluster 1. Its distance to the cluster mean is 2. Cluster 1 has 5 players.</p>
+<p>The next-closest cluster mean is cluster 2. Its distance to the cluster mean is 4. Cluster 2 has 10 players.</p>
+<p><span class="math display">\[k_{player}\]</span> = 5 * (4 / (2 + 4)) + 10 * (2 / (2 + 4))</p>
 </div>

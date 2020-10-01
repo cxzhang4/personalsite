@@ -366,6 +366,24 @@ amt_full_greater %>%
   kable_styling()
 ```
 
+## Problems
+
+- Lack of tuning. `k`= 5 is arbitrary, so I would like to be able to tune it. But tuning based on accuracy would be bad IMO because it presents the actual values as ground truth (i.e. what people *should* be paid): this is actually the opposite of what we are claiming with this analysis.
+
+- A different model for each observation. AFAIK, this is non-standard: usually, you would have one model, and that model would be flexible if you wanted to account for variation in observations. Even if multiple models were used, using a different model for each observation definitely seems extreme. However, removing one observation from the training set shouldn't make a large difference in the model. Furthermore, the adjustment has an obvious benefit here because it prevents the problem of using the observation's own response value as a nearest neighbor.
+
+- Re-predicting on the training set. Despite all of the adjustments we've made, I'm still concerned that we're fitting noise here.
+
 ## Conclusion
 
 It's possible that my method is terrible too (if you think it is, please let me know!). But the thing I want to emphasize: if you know you want to re-predict on your training set, DO NOT perform a "test-train" split on your training set.
+
+## Spitballing: a way to tune k without looking at the response value?
+
+Cluster the players. Use their cluster memberships to determine the value of `k` for k-nn regression.
+
+Suppose a player is in cluster 1. Its distance to the cluster mean is 2. Cluster 1 has 5 players.
+
+The next-closest cluster mean is cluster 2. Its distance to the cluster mean is 4. Cluster 2 has 10 players.
+
+$$k_{player}$$ = 5 * (4 / (2 + 4)) + 10 * (2 / (2 + 4))
