@@ -1,0 +1,1949 @@
+---
+title: NBA Salary Estimation
+author: Carson Zhang
+date: '2020-09-30'
+slug: nba-salary-estimation
+categories: []
+tags: []
+comments: no
+images: ~
+---
+
+<script src="/rmarkdown-libs/kePrint/kePrint.js"></script>
+<link href="/rmarkdown-libs/lightable/lightable.css" rel="stylesheet" />
+
+
+<p>How much should Player X make?</p>
+<p>As I was searching for existing analyses, I came across <a href="https://medium.com/@pipkinlewis/using-machine-learning-to-diagnose-nba-contract-amount-5b163cca648d">Lewis Pipkin’s use of machine learning</a>. I will address some mistakes I think he made in his analysis.</p>
+<ol style="list-style-type: decimal">
+<li>“As per standard ML procedure”, he performed a test-train split on the data, then applied the model to his entire dataset (train AND test) to come up with “diagnoses”.</li>
+</ol>
+<ul>
+<li><p>The problem is… this ISN’T a standard supervised learning procedure. The dataset of interest IS the dataset you have. It’s a tricky situation! In standard supervised learning, we’re trying to capture some “signal” from our training data that we hope will be present in new data. But here, we’re re-predicting on the training set, so we don’t care about generalizing to new data because there isn’t any new da ta.</p></li>
+<li><p>Therefore, I don’t think the test-train split will be helpful at all. This is inherently going to yield more accurate results for the observations that happened to be in the training set simply by chance. If you’re going to treat your model’s predictions as the ground truth (i.e. the amount of money an NBA player SHOULD make), then you’re going to systemically diagnose the players in the test set as overpaid or underpaid, and systemically consider the players in the training set to be more properly compensated. Purely by chance! This difference is illustrated below.</p></li>
+</ul>
+<p>We perform some preprocessing, and combine all of the salary and performance data into one table.</p>
+<pre class="r"><code>library(kableExtra)
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+library(ggplot2)</code></pre>
+<div id="data" class="section level2">
+<h2>Data</h2>
+<p>Data was obtained from <a href="https://www.basketball-reference.com">Basketball Reference</a>.</p>
+<ul>
+<li><p><a href="https://www.basketball-reference.com/leagues/NBA_2020_per_game.html">Per-game stats</a> (navigate to Seasons, Stats, Per G)</p></li>
+<li><p><a href="https://www.basketball-reference.com/leagues/NBA_2020_advanced.html">Advanced stats</a> (similar to above)</p></li>
+<li><p><a href="https://www.basketball-reference.com/contracts/players.html">Salaries</a></p></li>
+</ul>
+<pre class="r"><code># Ranks will mess up natural join (players won&#39;t have same rank in all tables)
+advanced_stats = read_csv(&quot;advanced_stats.csv&quot;) %&gt;%
+  mutate(Rk = NULL)</code></pre>
+<pre><code>## Warning: Missing column names filled in: &#39;X20&#39; [20], &#39;X25&#39; [25]</code></pre>
+<pre class="r"><code># rename to differentiate per-game stats from totals (also to preserve natural join)
+per_game_stats = read_csv(&quot;per_game_stats.csv&quot;) %&gt;%
+  rename(MPG = MP, PPG = PTS) %&gt;%
+  mutate(Rk = NULL)
+
+# Ranks provide too much info (including it is cheating b/c it&#39;s a function of the response)
+salaries = read_csv(&quot;salaries.csv&quot;) %&gt;%
+  mutate(Rk = NULL) %&gt;%
+  select(Player, `2019-20`) %&gt;%
+  mutate(Salary = as.numeric(str_sub(`2019-20`, start = 2))) %&gt;%
+  select(-c(`2019-20`))</code></pre>
+<pre class="r"><code># merge into one table
+stats_and_salaries = per_game_stats %&gt;%
+  inner_join(advanced_stats) %&gt;%
+  inner_join(salaries) %&gt;%
+  remove_empty(&quot;cols&quot;)
+
+# for simplicity, remove the incomplete cases
+stats_and_salaries = stats_and_salaries[complete.cases(stats_and_salaries), ]
+
+# find the players who played for multiple teams
+# for simplicity, exclude them
+players_mt = table(stats_and_salaries$Player)[table(stats_and_salaries$Player) &gt; 1] %&gt;% names()
+
+stats_and_salaries = stats_and_salaries %&gt;%
+  filter(!(Player %in% players_mt))
+
+# save the player names for later
+players = stats_and_salaries %&gt;%
+  select(Player)
+
+stats_and_salaries = stats_and_salaries %&gt;%
+  mutate(Player = NULL, Pos = NULL, Tm = NULL)</code></pre>
+<p>We perform a test-train split, fit a random forest with 500 trees, and examine the results.</p>
+<pre class="r"><code>stats_salaries_split = initial_split(stats_and_salaries, prop = 0.75)</code></pre>
+<pre class="r"><code>stats_salaries_train = stats_salaries_split %&gt;% 
+  training()
+
+stats_salaries_test = stats_salaries_split %&gt;%
+  testing()</code></pre>
+<pre class="r"><code>stats_salaries_rf = rand_forest(trees = 500, mode = &quot;regression&quot;) %&gt;%
+  set_engine(&quot;randomForest&quot;) %&gt;%
+  fit(Salary ~ ., data = stats_salaries_train)</code></pre>
+<pre class="r"><code>stats_salaries_rf %&gt;%
+  predict(stats_salaries_test) %&gt;%
+  bind_cols(stats_salaries_test) %&gt;%
+  metrics(truth = Salary, estimate = .pred) %&gt;%
+  kbl(caption = &quot;Test set metrics&quot;) %&gt;%
+  kable_styling()</code></pre>
+<table class="table" style="margin-left: auto; margin-right: auto;">
+<caption>
+<span id="tab:unnamed-chunk-8">Table 1: </span>Test set metrics
+</caption>
+<thead>
+<tr>
+<th style="text-align:left;">
+.metric
+</th>
+<th style="text-align:left;">
+.estimator
+</th>
+<th style="text-align:right;">
+.estimate
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+rmse
+</td>
+<td style="text-align:left;">
+standard
+</td>
+<td style="text-align:right;">
+6.526161e+06
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+rsq
+</td>
+<td style="text-align:left;">
+standard
+</td>
+<td style="text-align:right;">
+6.024526e-01
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+mae
+</td>
+<td style="text-align:left;">
+standard
+</td>
+<td style="text-align:right;">
+5.256946e+06
+</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>stats_salaries_rf %&gt;%
+  predict(stats_salaries_train) %&gt;%
+  bind_cols(stats_salaries_train) %&gt;%
+  metrics(truth = Salary, estimate = .pred) %&gt;%
+  kbl(caption = &quot;Training set metrics&quot;) %&gt;%
+  kable_styling()</code></pre>
+<table class="table" style="margin-left: auto; margin-right: auto;">
+<caption>
+<span id="tab:unnamed-chunk-9">Table 2: </span>Training set metrics
+</caption>
+<thead>
+<tr>
+<th style="text-align:left;">
+.metric
+</th>
+<th style="text-align:left;">
+.estimator
+</th>
+<th style="text-align:right;">
+.estimate
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+rmse
+</td>
+<td style="text-align:left;">
+standard
+</td>
+<td style="text-align:right;">
+2.580246e+06
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+rsq
+</td>
+<td style="text-align:left;">
+standard
+</td>
+<td style="text-align:right;">
+9.527626e-01
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+mae
+</td>
+<td style="text-align:left;">
+standard
+</td>
+<td style="text-align:right;">
+1.902528e+06
+</td>
+</tr>
+</tbody>
+</table>
+<p>Let’s verify this difference by simulation. We’ll repeat this procedure 100 times and compare the results from the test set and the training set.</p>
+<pre class="r"><code>n_sim = 100
+
+train_metrics = tibble(rmse = numeric(), rsq = numeric(), mae = numeric())
+test_metrics = tibble(rmse = numeric(), rsq = numeric(), mae = numeric())
+
+# TODO: refactor using purrr::map() or similar instead of sequentially appending to global data frames
+calc_rf_results = function(dataset) {
+  # split data
+  dataset_split = initial_split(stats_and_salaries, prop = 0.75)
+  
+  dataset_train = dataset_split %&gt;% training()
+  dataset_test = dataset_split %&gt;% testing()
+  
+  # fit model
+  rf_mod = rand_forest(trees = 500, mode = &quot;regression&quot;) %&gt;%
+    set_engine(&quot;randomForest&quot;) %&gt;%
+    fit(Salary ~ ., data = dataset_train)
+  
+  # get results
+  train_results = rf_mod %&gt;%
+    predict(dataset_train) %&gt;%
+    bind_cols(dataset_train) %&gt;%
+    metrics(truth = Salary, estimate = .pred)
+  
+  train_results_df = bind_rows(train_metrics, 
+                               tibble(rmse = (train_results %&gt;% filter(.metric == &quot;rmse&quot;))$.estimate, 
+                                rsq = (train_results %&gt;% filter(.metric == &quot;rsq&quot;))$.estimate, 
+                                mae = (train_results %&gt;% filter(.metric == &quot;mae&quot;))$.estimate))
+  
+  test_results = rf_mod %&gt;%
+    predict(dataset_test) %&gt;%
+    bind_cols(dataset_test) %&gt;%
+    metrics(truth = Salary, estimate = .pred)
+  
+  test_results_df = bind_rows(test_metrics, 
+                              tibble(rmse = (test_results %&gt;% filter(.metric == &quot;rmse&quot;))$.estimate, 
+                                rsq = (test_results %&gt;% filter(.metric == &quot;rsq&quot;))$.estimate, 
+                                mae = (test_results %&gt;% filter(.metric == &quot;mae&quot;))$.estimate))
+  
+  assign(&quot;train_metrics&quot;, train_results_df, pos = .GlobalEnv)
+  assign(&quot;test_metrics&quot;, test_results_df, pos = .GlobalEnv)
+}</code></pre>
+<pre class="r"><code>for (i in 1:n_sim) {
+  calc_rf_results(stats_and_salaries)
+}</code></pre>
+<p>We examine the distributions.</p>
+<pre class="r"><code>ggplot(train_metrics, aes(mae)) +
+  geom_histogram(binwidth = 100000) +
+  ggtitle(&quot;MAE on training set&quot;)</code></pre>
+<p><img src="/post/2020-09-30-nba-salary-estimation.en_files/figure-html/unnamed-chunk-12-1.png" width="672" /></p>
+<pre class="r"><code>ggplot(test_metrics, aes(mae)) +
+  geom_histogram(binwidth = 100000) +
+  ggtitle(&quot;MAE on test set&quot;)</code></pre>
+<p><img src="/post/2020-09-30-nba-salary-estimation.en_files/figure-html/unnamed-chunk-13-1.png" width="672" /></p>
+<p>We examine the best and worse case scenarios from the simulation.</p>
+<pre class="r"><code>mae_diff = test_metrics$mae - train_metrics$mae
+mae_diff[which.min(mae_diff)]</code></pre>
+<pre><code>## [1] 956022.1</code></pre>
+<p>In the best case, the MAE on the test set is 9.560221410^{5} more than the training set MAE.</p>
+<pre class="r"><code>mae_diff[which.max(mae_diff)]</code></pre>
+<pre><code>## [1] 4395742</code></pre>
+<p>In the worst case, the MAE on the test set is 4.39574210^{6} more than the training set MAE.</p>
+<pre class="r"><code>colMeans(test_metrics)</code></pre>
+<pre><code>##         rmse          rsq          mae 
+## 6.404734e+06 5.330805e-01 4.848531e+06</code></pre>
+<pre class="r"><code>colMeans(train_metrics)</code></pre>
+<pre><code>##         rmse          rsq          mae 
+## 2.607140e+06 9.508443e-01 1.954856e+06</code></pre>
+<p>If you did Pipkin’s analysis, I would expect you to claim a player from the test set is being overpaid or underpaid by an additional 2.893675510^{6} simply because he is in the test set. In other words, you would claim larger errors simply due to chance. This is bad, so I would like to prevent this.</p>
+<ol start="2" style="list-style-type: decimal">
+<li>(less important) He used a random forest.</li>
+</ol>
+<ul>
+<li><p>Pipkin is correct that random forests generally perform very well. But we don’t have the standard supervised learning setup here.</p></li>
+<li><p>In particular, optimizing a model based on differences in the response, then applying it to observations where it’s already seen the response, is simply asking for overfitting. Furthermore, if we’re trying to find salaries that are “wrong”, then why are we treating actual salaries as the ground truth?</p></li>
+<li><p>Furthermore, I’m not really interested in saying: my forest of trees, each with a random subset of predictors, thinks Player X should make Y dollars a year. This is hard to explain if you don’t already know about machine learning and random forests. I’d much rather make an argument that anyone can understand and interpret, such as: players who performed similarly to Player X made D dollars a year, so Player X should make D dollars a year. This is something you could present to a GM in a contract negotiation, and that makes a lot of intuitive sense - especially because the performance of other players directly defines the market. No need to overcomplicate things.</p></li>
+</ul>
+</div>
+<div id="solution" class="section level2">
+<h2>Solution</h2>
+<p>So we’re using k-nearest neighbors regression. But how am I going to tune <code>k</code> without looking at the differences between the actual and predicted values?</p>
+<p>For that matter, how am I going to tune <code>k</code> at all?</p>
+<p>To be quite honest, I don’t think I can. I’ve already <em>kind of</em> committed the cardinal sin of machine learning: peeking (just a little bit!) at the test data (.i.e. the training data).</p>
+<p>I could choose a value of <code>k</code> based on my domain knowledge. For example, 5 sounds decent: big enough to avoid overfitting too hard, small enough to provide some variation. But even that pick is influenced by the knowledge I have in my head: I pay some attention to NBA stats and contracts, so I certainly have <em>some</em> knowledge of some of the test data (however fuzzy it is).</p>
+<p>However, 5 is a common default value as well, so I’m okay with using it, despite the concerns.</p>
+<pre class="r"><code># normalize to compute distances between observations
+full_stats = recipe(Salary ~ ., data = stats_and_salaries) %&gt;%
+  step_normalize(all_predictors()) %&gt;% 
+  prep()
+
+full_stats_data = juice(full_stats)
+
+advanced_stats_only = recipe(Salary ~ WS + `WS/48` + BPM + VORP + PER, data = stats_and_salaries)  %&gt;%
+  step_normalize(all_predictors()) %&gt;%
+  prep()
+
+advanced_stats_data = juice(advanced_stats_only)</code></pre>
+<pre class="r"><code>knn_spec = nearest_neighbor(neighbors = 5) %&gt;%
+  set_engine(&quot;kknn&quot;) %&gt;%
+  set_mode(&quot;regression&quot;)</code></pre>
+<p>Re-predicting on the training set means that one of the nearest neighbors will always be the observation itself! This will make our predictions overly accurate. To address this, we define a function that generates leave-one-out k-nn predictions.</p>
+<pre class="r"><code>knn_loo = function(knn_spec, dataset) {
+  n = nrow(dataset)
+  
+  knn_preds = rep(0, times = n)
+  
+  for (i in 1:n) {
+    dataset_train = dataset[-i, ]
+    dataset_test = dataset[i, ]
+    
+    # train knn
+    knn_fit = knn_spec %&gt;%
+      fit(Salary ~ ., data = dataset_train)
+    
+    # save pred
+    knn_preds[i] = (knn_fit %&gt;% predict(dataset_test))$.pred
+  }
+  
+  return(mutate(dataset, .pred = knn_preds, Player = players))
+}</code></pre>
+<pre class="r"><code>full_stats_preds = knn_loo(knn_spec, full_stats_data) %&gt;%
+  mutate(amt_overpaid = Salary - .pred) %&gt;%
+  mutate(Player = players$Player)
+
+advanced_stats_preds = knn_loo(knn_spec, advanced_stats_data) %&gt;%
+  mutate(amt_overpaid = Salary - .pred) %&gt;%
+  mutate(Player = players$Player)</code></pre>
+<pre class="r"><code>full_stats_preds %&gt;%
+  arrange(amt_overpaid) %&gt;%
+  select(Player, Salary, .pred, amt_overpaid) %&gt;%
+  head(20) %&gt;%
+  kbl(caption = &quot;Underpaid players based on all stats&quot;) %&gt;%
+  kable_styling()</code></pre>
+<table class="table" style="margin-left: auto; margin-right: auto;">
+<caption>
+<span id="tab:unnamed-chunk-22">Table 3: </span>Underpaid players based on all stats
+</caption>
+<thead>
+<tr>
+<th style="text-align:left;">
+Player
+</th>
+<th style="text-align:right;">
+Salary
+</th>
+<th style="text-align:right;">
+.pred
+</th>
+<th style="text-align:right;">
+amt_overpaid
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+Luka Doncic01
+</td>
+<td style="text-align:right;">
+7683360
+</td>
+<td style="text-align:right;">
+30990845
+</td>
+<td style="text-align:right;">
+-23307485
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Trae Young01
+</td>
+<td style="text-align:right;">
+6273000
+</td>
+<td style="text-align:right;">
+26123419
+</td>
+<td style="text-align:right;">
+-19850419
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Shai Gilgeous-Alexander01
+</td>
+<td style="text-align:right;">
+3952920
+</td>
+<td style="text-align:right;">
+18258630
+</td>
+<td style="text-align:right;">
+-14305710
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Jamal Murray01
+</td>
+<td style="text-align:right;">
+4444746
+</td>
+<td style="text-align:right;">
+18500566
+</td>
+<td style="text-align:right;">
+-14055820
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Devonte’ Graham01
+</td>
+<td style="text-align:right;">
+1416852
+</td>
+<td style="text-align:right;">
+14177066
+</td>
+<td style="text-align:right;">
+-12760214
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Alec Burks01
+</td>
+<td style="text-align:right;">
+2320044
+</td>
+<td style="text-align:right;">
+14325758
+</td>
+<td style="text-align:right;">
+-12005714
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Buddy Hield01
+</td>
+<td style="text-align:right;">
+4861208
+</td>
+<td style="text-align:right;">
+16611593
+</td>
+<td style="text-align:right;">
+-11750385
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Fred VanVleet01
+</td>
+<td style="text-align:right;">
+9000000
+</td>
+<td style="text-align:right;">
+19133673
+</td>
+<td style="text-align:right;">
+-10133673
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Nemanja Bjelica01
+</td>
+<td style="text-align:right;">
+6825000
+</td>
+<td style="text-align:right;">
+16665672
+</td>
+<td style="text-align:right;">
+-9840672
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Jarrett Allen01
+</td>
+<td style="text-align:right;">
+2376840
+</td>
+<td style="text-align:right;">
+12178995
+</td>
+<td style="text-align:right;">
+-9802155
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+T.J. Warren01
+</td>
+<td style="text-align:right;">
+10810000
+</td>
+<td style="text-align:right;">
+20448693
+</td>
+<td style="text-align:right;">
+-9638693
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Bam Adebayo01
+</td>
+<td style="text-align:right;">
+3454080
+</td>
+<td style="text-align:right;">
+13079433
+</td>
+<td style="text-align:right;">
+-9625353
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Aaron Holiday01
+</td>
+<td style="text-align:right;">
+2239200
+</td>
+<td style="text-align:right;">
+11736732
+</td>
+<td style="text-align:right;">
+-9497532
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Kendrick Nunn01
+</td>
+<td style="text-align:right;">
+1416852
+</td>
+<td style="text-align:right;">
+10888992
+</td>
+<td style="text-align:right;">
+-9472140
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Lou Williams02
+</td>
+<td style="text-align:right;">
+8000000
+</td>
+<td style="text-align:right;">
+17387760
+</td>
+<td style="text-align:right;">
+-9387760
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Shabazz Napier01
+</td>
+<td style="text-align:right;">
+1882867
+</td>
+<td style="text-align:right;">
+11202853
+</td>
+<td style="text-align:right;">
+-9319986
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Chris Boucher01
+</td>
+<td style="text-align:right;">
+1588231
+</td>
+<td style="text-align:right;">
+10725963
+</td>
+<td style="text-align:right;">
+-9137732
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Carmelo Anthony01
+</td>
+<td style="text-align:right;">
+2159029
+</td>
+<td style="text-align:right;">
+11285329
+</td>
+<td style="text-align:right;">
+-9126300
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Domantas Sabonis01
+</td>
+<td style="text-align:right;">
+3529555
+</td>
+<td style="text-align:right;">
+12045759
+</td>
+<td style="text-align:right;">
+-8516204
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Enes Kanter01
+</td>
+<td style="text-align:right;">
+4767000
+</td>
+<td style="text-align:right;">
+13194073
+</td>
+<td style="text-align:right;">
+-8427073
+</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>advanced_stats_preds %&gt;%
+  arrange(amt_overpaid) %&gt;%
+  select(Player, Salary, .pred, amt_overpaid) %&gt;%
+  head(20) %&gt;%
+  kbl(caption = &quot;Underpaid players based on advanced stats&quot;) %&gt;%
+  kable_styling()</code></pre>
+<table class="table" style="margin-left: auto; margin-right: auto;">
+<caption>
+<span id="tab:unnamed-chunk-23">Table 4: </span>Underpaid players based on advanced stats
+</caption>
+<thead>
+<tr>
+<th style="text-align:left;">
+Player
+</th>
+<th style="text-align:right;">
+Salary
+</th>
+<th style="text-align:right;">
+.pred
+</th>
+<th style="text-align:right;">
+amt_overpaid
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+Luka Doncic01
+</td>
+<td style="text-align:right;">
+7683360
+</td>
+<td style="text-align:right;">
+32342012
+</td>
+<td style="text-align:right;">
+-24658652
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+De’Aaron Fox01
+</td>
+<td style="text-align:right;">
+6392760
+</td>
+<td style="text-align:right;">
+28944400
+</td>
+<td style="text-align:right;">
+-22551640
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Daniel Theis01
+</td>
+<td style="text-align:right;">
+5000000
+</td>
+<td style="text-align:right;">
+23033600
+</td>
+<td style="text-align:right;">
+-18033600
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Trae Young01
+</td>
+<td style="text-align:right;">
+6273000
+</td>
+<td style="text-align:right;">
+24182129
+</td>
+<td style="text-align:right;">
+-17909129
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Rondae Hollis-Jefferson01
+</td>
+<td style="text-align:right;">
+2500000
+</td>
+<td style="text-align:right;">
+18464611
+</td>
+<td style="text-align:right;">
+-15964611
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Derrick Rose01
+</td>
+<td style="text-align:right;">
+7317073
+</td>
+<td style="text-align:right;">
+20936120
+</td>
+<td style="text-align:right;">
+-13619047
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Bam Adebayo01
+</td>
+<td style="text-align:right;">
+3454080
+</td>
+<td style="text-align:right;">
+16648004
+</td>
+<td style="text-align:right;">
+-13193924
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Montrezl Harrell01
+</td>
+<td style="text-align:right;">
+6000000
+</td>
+<td style="text-align:right;">
+18903337
+</td>
+<td style="text-align:right;">
+-12903337
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Fred VanVleet01
+</td>
+<td style="text-align:right;">
+9000000
+</td>
+<td style="text-align:right;">
+21829737
+</td>
+<td style="text-align:right;">
+-12829737
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Jarrett Allen01
+</td>
+<td style="text-align:right;">
+2376840
+</td>
+<td style="text-align:right;">
+14517748
+</td>
+<td style="text-align:right;">
+-12140908
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Derrick White01
+</td>
+<td style="text-align:right;">
+1948080
+</td>
+<td style="text-align:right;">
+13560865
+</td>
+<td style="text-align:right;">
+-11612785
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Willie Cauley-Stein01
+</td>
+<td style="text-align:right;">
+2177483
+</td>
+<td style="text-align:right;">
+13381613
+</td>
+<td style="text-align:right;">
+-11204130
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Nemanja Bjelica01
+</td>
+<td style="text-align:right;">
+6825000
+</td>
+<td style="text-align:right;">
+17697293
+</td>
+<td style="text-align:right;">
+-10872293
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Jaxson Hayes02
+</td>
+<td style="text-align:right;">
+4862040
+</td>
+<td style="text-align:right;">
+15458363
+</td>
+<td style="text-align:right;">
+-10596323
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Jayson Tatum01
+</td>
+<td style="text-align:right;">
+7830000
+</td>
+<td style="text-align:right;">
+18198349
+</td>
+<td style="text-align:right;">
+-10368349
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Devonte’ Graham01
+</td>
+<td style="text-align:right;">
+1416852
+</td>
+<td style="text-align:right;">
+10532571
+</td>
+<td style="text-align:right;">
+-9115719
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Domantas Sabonis01
+</td>
+<td style="text-align:right;">
+3529555
+</td>
+<td style="text-align:right;">
+12465996
+</td>
+<td style="text-align:right;">
+-8936441
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Royce O’Neale01
+</td>
+<td style="text-align:right;">
+1618520
+</td>
+<td style="text-align:right;">
+10339180
+</td>
+<td style="text-align:right;">
+-8720660
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+T.J. McConnell01
+</td>
+<td style="text-align:right;">
+3500000
+</td>
+<td style="text-align:right;">
+12198960
+</td>
+<td style="text-align:right;">
+-8698960
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+T.J. Warren01
+</td>
+<td style="text-align:right;">
+10810000
+</td>
+<td style="text-align:right;">
+19474640
+</td>
+<td style="text-align:right;">
+-8664640
+</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>full_stats_preds %&gt;%
+  arrange(desc(amt_overpaid)) %&gt;%
+  select(Player, Salary, .pred, amt_overpaid) %&gt;%
+  head(20) %&gt;%
+  kbl(caption = &quot;Overpaid players based on all stats&quot;) %&gt;%
+  kable_styling()</code></pre>
+<table class="table" style="margin-left: auto; margin-right: auto;">
+<caption>
+<span id="tab:unnamed-chunk-24">Table 5: </span>Overpaid players based on all stats
+</caption>
+<thead>
+<tr>
+<th style="text-align:left;">
+Player
+</th>
+<th style="text-align:right;">
+Salary
+</th>
+<th style="text-align:right;">
+.pred
+</th>
+<th style="text-align:right;">
+amt_overpaid
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+Russell Westbrook01
+</td>
+<td style="text-align:right;">
+38178000
+</td>
+<td style="text-align:right;">
+8578324
+</td>
+<td style="text-align:right;">
+29599676
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Tobias Harris02
+</td>
+<td style="text-align:right;">
+31034483
+</td>
+<td style="text-align:right;">
+5418218
+</td>
+<td style="text-align:right;">
+25616265
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Andrew Wiggins01
+</td>
+<td style="text-align:right;">
+27504630
+</td>
+<td style="text-align:right;">
+5722395
+</td>
+<td style="text-align:right;">
+21782235
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+LeBron James01
+</td>
+<td style="text-align:right;">
+37436858
+</td>
+<td style="text-align:right;">
+18783886
+</td>
+<td style="text-align:right;">
+18652972
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Andre Drummond01
+</td>
+<td style="text-align:right;">
+27093019
+</td>
+<td style="text-align:right;">
+8897025
+</td>
+<td style="text-align:right;">
+18195994
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Devin Booker01
+</td>
+<td style="text-align:right;">
+27250000
+</td>
+<td style="text-align:right;">
+9919318
+</td>
+<td style="text-align:right;">
+17330682
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Jrue Holiday01
+</td>
+<td style="text-align:right;">
+26131111
+</td>
+<td style="text-align:right;">
+10342026
+</td>
+<td style="text-align:right;">
+15789085
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Al Horford01
+</td>
+<td style="text-align:right;">
+28000000
+</td>
+<td style="text-align:right;">
+12449033
+</td>
+<td style="text-align:right;">
+15550967
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Paul Millsap01
+</td>
+<td style="text-align:right;">
+30500000
+</td>
+<td style="text-align:right;">
+15004417
+</td>
+<td style="text-align:right;">
+15495583
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Gordon Hayward01
+</td>
+<td style="text-align:right;">
+32700690
+</td>
+<td style="text-align:right;">
+17403430
+</td>
+<td style="text-align:right;">
+15297260
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Kent Bazemore01
+</td>
+<td style="text-align:right;">
+19269662
+</td>
+<td style="text-align:right;">
+4221917
+</td>
+<td style="text-align:right;">
+15047745
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Kemba Walker02
+</td>
+<td style="text-align:right;">
+32742000
+</td>
+<td style="text-align:right;">
+17765289
+</td>
+<td style="text-align:right;">
+14976711
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+CJ McCollum01
+</td>
+<td style="text-align:right;">
+27556959
+</td>
+<td style="text-align:right;">
+12634331
+</td>
+<td style="text-align:right;">
+14922628
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Kristaps Porzingis01
+</td>
+<td style="text-align:right;">
+27285000
+</td>
+<td style="text-align:right;">
+12506555
+</td>
+<td style="text-align:right;">
+14778445
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Bradley Beal01
+</td>
+<td style="text-align:right;">
+27093019
+</td>
+<td style="text-align:right;">
+12587890
+</td>
+<td style="text-align:right;">
+14505129
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Harrison Barnes02
+</td>
+<td style="text-align:right;">
+24147727
+</td>
+<td style="text-align:right;">
+9861224
+</td>
+<td style="text-align:right;">
+14286503
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Terry Rozier01
+</td>
+<td style="text-align:right;">
+19894737
+</td>
+<td style="text-align:right;">
+5808654
+</td>
+<td style="text-align:right;">
+14086083
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Zach LaVine01
+</td>
+<td style="text-align:right;">
+19500000
+</td>
+<td style="text-align:right;">
+6016212
+</td>
+<td style="text-align:right;">
+13483788
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+James Harden01
+</td>
+<td style="text-align:right;">
+37800000
+</td>
+<td style="text-align:right;">
+24774799
+</td>
+<td style="text-align:right;">
+13025201
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Kyle Lowry01
+</td>
+<td style="text-align:right;">
+33296296
+</td>
+<td style="text-align:right;">
+20394279
+</td>
+<td style="text-align:right;">
+12902017
+</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>advanced_stats_preds %&gt;%
+  arrange(desc(amt_overpaid)) %&gt;%
+  select(Player, Salary, .pred, amt_overpaid) %&gt;%
+  head(20) %&gt;%
+  kbl(caption = &quot;Overpaid players based on advanced stats&quot;) %&gt;%
+  kable_styling()</code></pre>
+<table class="table" style="margin-left: auto; margin-right: auto;">
+<caption>
+<span id="tab:unnamed-chunk-25">Table 6: </span>Overpaid players based on advanced stats
+</caption>
+<thead>
+<tr>
+<th style="text-align:left;">
+Player
+</th>
+<th style="text-align:right;">
+Salary
+</th>
+<th style="text-align:right;">
+.pred
+</th>
+<th style="text-align:right;">
+amt_overpaid
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+Tobias Harris02
+</td>
+<td style="text-align:right;">
+31034483
+</td>
+<td style="text-align:right;">
+6154528
+</td>
+<td style="text-align:right;">
+24879955
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Kyle Lowry01
+</td>
+<td style="text-align:right;">
+33296296
+</td>
+<td style="text-align:right;">
+8702534
+</td>
+<td style="text-align:right;">
+24593762
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Russell Westbrook01
+</td>
+<td style="text-align:right;">
+38178000
+</td>
+<td style="text-align:right;">
+17195943
+</td>
+<td style="text-align:right;">
+20982057
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Al Horford01
+</td>
+<td style="text-align:right;">
+28000000
+</td>
+<td style="text-align:right;">
+8112823
+</td>
+<td style="text-align:right;">
+19887177
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+CJ McCollum01
+</td>
+<td style="text-align:right;">
+27556959
+</td>
+<td style="text-align:right;">
+8173235
+</td>
+<td style="text-align:right;">
+19383724
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Paul Millsap01
+</td>
+<td style="text-align:right;">
+30500000
+</td>
+<td style="text-align:right;">
+11840471
+</td>
+<td style="text-align:right;">
+18659529
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Chris Paul01
+</td>
+<td style="text-align:right;">
+38506482
+</td>
+<td style="text-align:right;">
+21014926
+</td>
+<td style="text-align:right;">
+17491556
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Joel Embiid01
+</td>
+<td style="text-align:right;">
+27504630
+</td>
+<td style="text-align:right;">
+10555842
+</td>
+<td style="text-align:right;">
+16948788
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Gordon Hayward01
+</td>
+<td style="text-align:right;">
+32700690
+</td>
+<td style="text-align:right;">
+15960450
+</td>
+<td style="text-align:right;">
+16740240
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Kent Bazemore01
+</td>
+<td style="text-align:right;">
+19269662
+</td>
+<td style="text-align:right;">
+3325992
+</td>
+<td style="text-align:right;">
+15943670
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Harrison Barnes02
+</td>
+<td style="text-align:right;">
+24147727
+</td>
+<td style="text-align:right;">
+8631939
+</td>
+<td style="text-align:right;">
+15515788
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+LeBron James01
+</td>
+<td style="text-align:right;">
+37436858
+</td>
+<td style="text-align:right;">
+22624909
+</td>
+<td style="text-align:right;">
+14811949
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Gary Harris01
+</td>
+<td style="text-align:right;">
+17839286
+</td>
+<td style="text-align:right;">
+3804089
+</td>
+<td style="text-align:right;">
+14035197
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Nikola Vucevic01
+</td>
+<td style="text-align:right;">
+28000000
+</td>
+<td style="text-align:right;">
+14321003
+</td>
+<td style="text-align:right;">
+13678997
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Kemba Walker02
+</td>
+<td style="text-align:right;">
+32742000
+</td>
+<td style="text-align:right;">
+19120951
+</td>
+<td style="text-align:right;">
+13621049
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Andrew Wiggins01
+</td>
+<td style="text-align:right;">
+27504630
+</td>
+<td style="text-align:right;">
+14340724
+</td>
+<td style="text-align:right;">
+13163906
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Kristaps Porzingis01
+</td>
+<td style="text-align:right;">
+27285000
+</td>
+<td style="text-align:right;">
+14297313
+</td>
+<td style="text-align:right;">
+12987687
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+LaMarcus Aldridge01
+</td>
+<td style="text-align:right;">
+26000000
+</td>
+<td style="text-align:right;">
+13087689
+</td>
+<td style="text-align:right;">
+12912311
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Kawhi Leonard01
+</td>
+<td style="text-align:right;">
+32742000
+</td>
+<td style="text-align:right;">
+20305563
+</td>
+<td style="text-align:right;">
+12436437
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Bradley Beal01
+</td>
+<td style="text-align:right;">
+27093019
+</td>
+<td style="text-align:right;">
+15013249
+</td>
+<td style="text-align:right;">
+12079770
+</td>
+</tr>
+</tbody>
+</table>
+<p>I wouldn’t put much stock in these results because they’re influenced by the COVID-19 season hiatus (many players played fewer games simply because their teams weren’t invited to the bubble). But the method still stands and could be applied to any year (or the pre-bubble data).</p>
+<p>There are also quirks in this data. I have excluded players who played for multiple teams, and players who didn’t qualify for all of the statistical categories.</p>
+<p>A result that stuck out:</p>
+<ul>
+<li>De’Aaron Fox is severely underpaid if you look only at advanced stats, but not underpaid as much if you include all stats. <strong>I’m more inclined to trust the advanced stats</strong> in general because they’ve been shown to capture player performance well, and including multiple advanced stats helps account for noisy results from an individual metric. Whereas including everything allows simple counting stats (that may not be meaningful) just as much influence as good advnaced metrics.</li>
+</ul>
+<p>We examine the largest differences between the two predictions.</p>
+<pre class="r"><code>amt_full_greater = full_stats_preds %&gt;%
+  inner_join(advanced_stats_preds, by = c(&quot;Player&quot;)) %&gt;%
+  mutate(diff_in_preds = amt_overpaid.x - amt_overpaid.y) %&gt;%
+  select(Player, diff_in_preds)</code></pre>
+<p>This table shows the players whose advanced metrics look the most like players who make a lot more money. This could be interpreted as “Players who are good, but are underrated by traditional box score/counting stats”.</p>
+<pre class="r"><code>amt_full_greater %&gt;%
+  arrange(diff_in_preds) %&gt;%
+  head(20) %&gt;%
+  kbl(caption = &quot;Players who are favored by advanced stats&quot;) %&gt;%
+  kable_styling()</code></pre>
+<table class="table" style="margin-left: auto; margin-right: auto;">
+<caption>
+<span id="tab:unnamed-chunk-27">Table 7: </span>Players who are favored by advanced stats
+</caption>
+<thead>
+<tr>
+<th style="text-align:left;">
+Player
+</th>
+<th style="text-align:right;">
+diff_in_preds
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+Khris Middleton01
+</td>
+<td style="text-align:right;">
+-12557834
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Kyle Lowry01
+</td>
+<td style="text-align:right;">
+-11691745
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+LaMarcus Aldridge01
+</td>
+<td style="text-align:right;">
+-11503928
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Enes Kanter01
+</td>
+<td style="text-align:right;">
+-11051280
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Lou Williams02
+</td>
+<td style="text-align:right;">
+-10881840
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Shai Gilgeous-Alexander01
+</td>
+<td style="text-align:right;">
+-9465315
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Carmelo Anthony01
+</td>
+<td style="text-align:right;">
+-8292405
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Bogdan Bogdanovic01
+</td>
+<td style="text-align:right;">
+-8160086
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Kendrick Nunn01
+</td>
+<td style="text-align:right;">
+-8025597
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Buddy Hield01
+</td>
+<td style="text-align:right;">
+-8017929
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Nikola Vucevic01
+</td>
+<td style="text-align:right;">
+-7668575
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Chris Boucher01
+</td>
+<td style="text-align:right;">
+-7639319
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Will Barton01
+</td>
+<td style="text-align:right;">
+-7534513
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Serge Ibaka01
+</td>
+<td style="text-align:right;">
+-7340452
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Chris Paul01
+</td>
+<td style="text-align:right;">
+-6548599
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Tristan Thompson01
+</td>
+<td style="text-align:right;">
+-6225099
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Kyle Kuzma01
+</td>
+<td style="text-align:right;">
+-6115273
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Jamal Murray01
+</td>
+<td style="text-align:right;">
+-6060221
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Trey Lyles01
+</td>
+<td style="text-align:right;">
+-6049754
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Aaron Holiday01
+</td>
+<td style="text-align:right;">
+-6013031
+</td>
+</tr>
+</tbody>
+</table>
+<p>This table shows the players whose advanced metrics look the most like players who make a lot less money. could be interpreted as “Players who put up big numbers, but aren’t actually that good (i.e. they put up”empty stats“).”</p>
+<pre class="r"><code>amt_full_greater %&gt;%
+  arrange(desc(diff_in_preds)) %&gt;%
+  head(20) %&gt;%
+  kbl(caption = &quot;Players who are favored by all stats&quot;) %&gt;%
+  kable_styling()</code></pre>
+<table class="table" style="margin-left: auto; margin-right: auto;">
+<caption>
+<span id="tab:unnamed-chunk-28">Table 8: </span>Players who are favored by all stats
+</caption>
+<thead>
+<tr>
+<th style="text-align:left;">
+Player
+</th>
+<th style="text-align:right;">
+diff_in_preds
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left;">
+Zach LaVine01
+</td>
+<td style="text-align:right;">
+20955549
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Andre Drummond01
+</td>
+<td style="text-align:right;">
+16635070
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Daniel Theis01
+</td>
+<td style="text-align:right;">
+15749000
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+De’Aaron Fox01
+</td>
+<td style="text-align:right;">
+14854473
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Jayson Tatum01
+</td>
+<td style="text-align:right;">
+13436770
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Mason Plumlee01
+</td>
+<td style="text-align:right;">
+13180340
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Nikola Jokic01
+</td>
+<td style="text-align:right;">
+12510484
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Jrue Holiday01
+</td>
+<td style="text-align:right;">
+11519886
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Giannis Antetokounmpo01
+</td>
+<td style="text-align:right;">
+10608448
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Jaxson Hayes02
+</td>
+<td style="text-align:right;">
+10007376
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Rondae Hollis-Jefferson01
+</td>
+<td style="text-align:right;">
+9878367
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Ben Simmons01
+</td>
+<td style="text-align:right;">
+9812157
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Damian Lillard01
+</td>
+<td style="text-align:right;">
+9452187
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Montrezl Harrell01
+</td>
+<td style="text-align:right;">
+8896474
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Andrew Wiggins01
+</td>
+<td style="text-align:right;">
+8618328
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Russell Westbrook01
+</td>
+<td style="text-align:right;">
+8617618
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Lonnie Walker01
+</td>
+<td style="text-align:right;">
+7979373
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Devin Booker01
+</td>
+<td style="text-align:right;">
+7635227
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Markelle Fultz01
+</td>
+<td style="text-align:right;">
+6696426
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+Cody Zeller01
+</td>
+<td style="text-align:right;">
+6458648
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div id="conclusion" class="section level2">
+<h2>Conclusion</h2>
+<p>It’s possible that my method is terrible too (if you think it is, please let me know!). But the thing I want to emphasize: if you know you want to re-predict on your training set, DO NOT perform a “test-train” split on your training set.</p>
+</div>

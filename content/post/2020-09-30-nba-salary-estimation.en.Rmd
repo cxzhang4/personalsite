@@ -1,0 +1,371 @@
+---
+title: NBA Salary Estimation
+author: Carson Zhang
+date: '2020-09-30'
+slug: nba-salary-estimation
+categories: []
+tags: []
+comments: no
+images: ~
+---
+
+```{r, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE
+)
+```
+
+How much should Player X make?
+
+As I was searching for existing analyses, I came across [Lewis Pipkin's use of machine learning](https://medium.com/@pipkinlewis/using-machine-learning-to-diagnose-nba-contract-amount-5b163cca648d). I will address some mistakes I think he made in his analysis.
+
+1. "As per standard ML procedure", he performed a test-train split on the data, then applied the model to his entire dataset (train AND test) to come up with "diagnoses".
+
+- The problem is... this ISN'T a standard supervised learning procedure. The dataset of interest IS the dataset you have. It's a tricky situation! In standard supervised learning, we're trying to capture some "signal" from our training data that we hope will be present in new data. But here, we're re-predicting on the training set, so we don't care about generalizing to new data because there isn't any new da ta.
+
+- Therefore, I don't think the test-train split will be helpful at all. This is inherently going to yield more accurate results for the observations that happened to be in the training set simply by chance. If you're going to treat your model's predictions as the ground truth (i.e. the amount of money an NBA player SHOULD make), then you're going to systemically diagnose the players in the test set as overpaid or underpaid, and systemically consider the players in the training set to be more properly compensated. Purely by chance! This difference is illustrated below.
+
+We perform some preprocessing, and combine all of the salary and performance data into one table.
+
+```{r}
+library(kableExtra)
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+library(ggplot2)
+```
+
+## Data
+
+Data was obtained from [Basketball Reference](https://www.basketball-reference.com). 
+
+- [Per-game stats](https://www.basketball-reference.com/leagues/NBA_2020_per_game.html) (navigate to Seasons, Stats, Per G)
+
+- [Advanced stats](https://www.basketball-reference.com/leagues/NBA_2020_advanced.html) (similar to above)
+
+- [Salaries](https://www.basketball-reference.com/contracts/players.html)
+
+```{r}
+# Ranks will mess up natural join (players won't have same rank in all tables)
+advanced_stats = read_csv("advanced_stats.csv") %>%
+  mutate(Rk = NULL)
+
+# rename to differentiate per-game stats from totals (also to preserve natural join)
+per_game_stats = read_csv("per_game_stats.csv") %>%
+  rename(MPG = MP, PPG = PTS) %>%
+  mutate(Rk = NULL)
+
+# Ranks provide too much info (including it is cheating b/c it's a function of the response)
+salaries = read_csv("salaries.csv") %>%
+  mutate(Rk = NULL) %>%
+  select(Player, `2019-20`) %>%
+  mutate(Salary = as.numeric(str_sub(`2019-20`, start = 2))) %>%
+  select(-c(`2019-20`))
+```
+
+```{r}
+# merge into one table
+stats_and_salaries = per_game_stats %>%
+  inner_join(advanced_stats) %>%
+  inner_join(salaries) %>%
+  remove_empty("cols")
+
+# for simplicity, remove the incomplete cases
+stats_and_salaries = stats_and_salaries[complete.cases(stats_and_salaries), ]
+
+# find the players who played for multiple teams
+# for simplicity, exclude them
+players_mt = table(stats_and_salaries$Player)[table(stats_and_salaries$Player) > 1] %>% names()
+
+stats_and_salaries = stats_and_salaries %>%
+  filter(!(Player %in% players_mt))
+
+# save the player names for later
+players = stats_and_salaries %>%
+  select(Player)
+
+stats_and_salaries = stats_and_salaries %>%
+  mutate(Player = NULL, Pos = NULL, Tm = NULL)
+```
+
+We perform a test-train split, fit a random forest with 500 trees, and examine the results.
+
+```{r}
+stats_salaries_split = initial_split(stats_and_salaries, prop = 0.75)
+```
+
+```{r}
+stats_salaries_train = stats_salaries_split %>% 
+  training()
+
+stats_salaries_test = stats_salaries_split %>%
+  testing()
+```
+
+```{r}
+stats_salaries_rf = rand_forest(trees = 500, mode = "regression") %>%
+  set_engine("randomForest") %>%
+  fit(Salary ~ ., data = stats_salaries_train)
+```
+
+```{r}
+stats_salaries_rf %>%
+  predict(stats_salaries_test) %>%
+  bind_cols(stats_salaries_test) %>%
+  metrics(truth = Salary, estimate = .pred) %>%
+  kbl(caption = "Test set metrics") %>%
+  kable_styling()
+```
+
+```{r}
+stats_salaries_rf %>%
+  predict(stats_salaries_train) %>%
+  bind_cols(stats_salaries_train) %>%
+  metrics(truth = Salary, estimate = .pred) %>%
+  kbl(caption = "Training set metrics") %>%
+  kable_styling()
+```
+
+Let's verify this difference by simulation. We'll repeat this procedure 100 times and compare the results from the test set and the training set.
+
+```{r}
+n_sim = 100
+
+train_metrics = tibble(rmse = numeric(), rsq = numeric(), mae = numeric())
+test_metrics = tibble(rmse = numeric(), rsq = numeric(), mae = numeric())
+
+# TODO: refactor using purrr::map() or similar instead of sequentially appending to global data frames
+calc_rf_results = function(dataset) {
+  # split data
+  dataset_split = initial_split(stats_and_salaries, prop = 0.75)
+  
+  dataset_train = dataset_split %>% training()
+  dataset_test = dataset_split %>% testing()
+  
+  # fit model
+  rf_mod = rand_forest(trees = 500, mode = "regression") %>%
+    set_engine("randomForest") %>%
+    fit(Salary ~ ., data = dataset_train)
+  
+  # get results
+  train_results = rf_mod %>%
+    predict(dataset_train) %>%
+    bind_cols(dataset_train) %>%
+    metrics(truth = Salary, estimate = .pred)
+  
+  train_results_df = bind_rows(train_metrics, 
+                               tibble(rmse = (train_results %>% filter(.metric == "rmse"))$.estimate, 
+                                rsq = (train_results %>% filter(.metric == "rsq"))$.estimate, 
+                                mae = (train_results %>% filter(.metric == "mae"))$.estimate))
+  
+  test_results = rf_mod %>%
+    predict(dataset_test) %>%
+    bind_cols(dataset_test) %>%
+    metrics(truth = Salary, estimate = .pred)
+  
+  test_results_df = bind_rows(test_metrics, 
+                              tibble(rmse = (test_results %>% filter(.metric == "rmse"))$.estimate, 
+                                rsq = (test_results %>% filter(.metric == "rsq"))$.estimate, 
+                                mae = (test_results %>% filter(.metric == "mae"))$.estimate))
+  
+  assign("train_metrics", train_results_df, pos = .GlobalEnv)
+  assign("test_metrics", test_results_df, pos = .GlobalEnv)
+}
+```
+
+```{r}
+for (i in 1:n_sim) {
+  calc_rf_results(stats_and_salaries)
+}
+```
+
+We examine the distributions.
+
+```{r}
+ggplot(train_metrics, aes(mae)) +
+  geom_histogram(binwidth = 100000) +
+  ggtitle("MAE on training set")
+```
+
+```{r}
+ggplot(test_metrics, aes(mae)) +
+  geom_histogram(binwidth = 100000) +
+  ggtitle("MAE on test set")
+```
+
+We examine the best and worse case scenarios from the simulation.
+
+```{r}
+mae_diff = test_metrics$mae - train_metrics$mae
+mae_diff[which.min(mae_diff)]
+```
+
+In the best case, the MAE on the test set is `r mae_diff[which.min(mae_diff)]` more than the training set MAE.
+
+```{r}
+mae_diff[which.max(mae_diff)]
+```
+
+In the worst case, the MAE on the test set is `r mae_diff[which.max(mae_diff)]` more than the training set MAE.
+
+```{r}
+colMeans(test_metrics)
+```
+
+```{r}
+colMeans(train_metrics)
+```
+
+If you did Pipkin's analysis, I would expect you to claim a player from the test set is being overpaid or underpaid by an additional `r colMeans(test_metrics)["mae"] - colMeans(train_metrics)["mae"]` simply because he is in the test set. In other words, you would claim larger errors simply due to chance. This is bad, so I would like to prevent this.
+
+2. (less important) He used a random forest.
+
+- Pipkin is correct that random forests generally perform very well. But we don't have the standard supervised learning setup here.
+
+- In particular, optimizing a model based on differences in the response, then applying it to observations where it's already seen the response, is simply asking for overfitting. Furthermore, if we're trying to find salaries that are "wrong", then why are we treating actual salaries as the ground truth?
+
+- Furthermore, I'm not really interested in saying: my forest of trees, each with a random subset of predictors, thinks Player X should make Y dollars a year. This is hard to explain if you don't already know about machine learning and random forests. I'd much rather make an argument that anyone can understand and interpret, such as: players who performed similarly to Player X made D dollars a year, so Player X should make D dollars a year. This is something you could present to a GM in a contract negotiation, and that makes a lot of intuitive sense - especially because the performance of other players directly defines the market. No need to overcomplicate things.
+
+## Solution
+
+So we're using k-nearest neighbors regression. But how am I going to tune `k` without looking at the differences between the actual and predicted values?
+
+For that matter, how am I going to tune `k` at all?
+
+To be quite honest, I don't think I can. I've already *kind of* committed the cardinal sin of machine learning: peeking (just a little bit!) at the test data (.i.e. the training data).
+
+I could choose a value of `k` based on my domain knowledge. For example, 5 sounds decent: big enough to avoid overfitting too hard, small enough to provide some variation. But even that pick is influenced by the knowledge I have in my head: I pay some attention to NBA stats and contracts, so I certainly have *some* knowledge of some of the test data (however fuzzy it is).
+
+However, 5 is a common default value as well, so I'm okay with using it, despite the concerns.
+
+```{r}
+# normalize to compute distances between observations
+full_stats = recipe(Salary ~ ., data = stats_and_salaries) %>%
+  step_normalize(all_predictors()) %>% 
+  prep()
+
+full_stats_data = juice(full_stats)
+
+advanced_stats_only = recipe(Salary ~ WS + `WS/48` + BPM + VORP + PER, data = stats_and_salaries)  %>%
+  step_normalize(all_predictors()) %>%
+  prep()
+
+advanced_stats_data = juice(advanced_stats_only)
+```
+
+```{r}
+knn_spec = nearest_neighbor(neighbors = 5) %>%
+  set_engine("kknn") %>%
+  set_mode("regression")
+```
+
+Re-predicting on the training set means that one of the nearest neighbors will always be the observation itself! This will make our predictions overly accurate. To address this, we define a function that generates leave-one-out k-nn predictions.
+
+```{r}
+knn_loo = function(knn_spec, dataset) {
+  n = nrow(dataset)
+  
+  knn_preds = rep(0, times = n)
+  
+  for (i in 1:n) {
+    dataset_train = dataset[-i, ]
+    dataset_test = dataset[i, ]
+    
+    # train knn
+    knn_fit = knn_spec %>%
+      fit(Salary ~ ., data = dataset_train)
+    
+    # save pred
+    knn_preds[i] = (knn_fit %>% predict(dataset_test))$.pred
+  }
+  
+  return(mutate(dataset, .pred = knn_preds, Player = players))
+}
+```
+
+```{r}
+full_stats_preds = knn_loo(knn_spec, full_stats_data) %>%
+  mutate(amt_overpaid = Salary - .pred) %>%
+  mutate(Player = players$Player)
+
+advanced_stats_preds = knn_loo(knn_spec, advanced_stats_data) %>%
+  mutate(amt_overpaid = Salary - .pred) %>%
+  mutate(Player = players$Player)
+```
+
+```{r}
+full_stats_preds %>%
+  arrange(amt_overpaid) %>%
+  select(Player, Salary, .pred, amt_overpaid) %>%
+  head(20) %>%
+  kbl(caption = "Underpaid players based on all stats") %>%
+  kable_styling()
+```
+
+```{r}
+advanced_stats_preds %>%
+  arrange(amt_overpaid) %>%
+  select(Player, Salary, .pred, amt_overpaid) %>%
+  head(20) %>%
+  kbl(caption = "Underpaid players based on advanced stats") %>%
+  kable_styling()
+```
+
+```{r}
+full_stats_preds %>%
+  arrange(desc(amt_overpaid)) %>%
+  select(Player, Salary, .pred, amt_overpaid) %>%
+  head(20) %>%
+  kbl(caption = "Overpaid players based on all stats") %>%
+  kable_styling()
+```
+
+```{r}
+advanced_stats_preds %>%
+  arrange(desc(amt_overpaid)) %>%
+  select(Player, Salary, .pred, amt_overpaid) %>%
+  head(20) %>%
+  kbl(caption = "Overpaid players based on advanced stats") %>%
+  kable_styling()
+```
+
+I wouldn't put much stock in these results because they're influenced by the COVID-19 season hiatus (many players played fewer games simply because their teams weren't invited to the bubble). But the method still stands and could be applied to any year (or the pre-bubble data).
+
+There are also quirks in this data. I have excluded players who played for multiple teams, and players who didn't qualify for all of the statistical categories. 
+
+A result that stuck out:
+
+- De'Aaron Fox is severely underpaid if you look only at advanced stats, but not underpaid as much if you include all stats. **I'm more inclined to trust the advanced stats** in general because they've been shown to capture player performance well, and including multiple advanced stats helps account for noisy results from an individual metric. Whereas including everything allows simple counting stats (that may not be meaningful) just as much influence as good advnaced metrics.
+
+We examine the largest differences between the two predictions.
+
+```{r}
+amt_full_greater = full_stats_preds %>%
+  inner_join(advanced_stats_preds, by = c("Player")) %>%
+  mutate(diff_in_preds = amt_overpaid.x - amt_overpaid.y) %>%
+  select(Player, diff_in_preds)
+```
+
+This table shows the players whose advanced metrics look the most like players who make a lot more money. This could be interpreted as "Players who are good, but are underrated by traditional box score/counting stats".
+
+```{r}
+amt_full_greater %>%
+  arrange(diff_in_preds) %>%
+  head(20) %>%
+  kbl(caption = "Players who are favored by advanced stats") %>%
+  kable_styling()
+```
+
+This table shows the players whose advanced metrics look the most like players who make a lot less money. could be interpreted as "Players who put up big numbers, but aren't actually that good (i.e. they put up "empty stats")."
+
+```{r}
+amt_full_greater %>%
+  arrange(desc(diff_in_preds)) %>%
+  head(20) %>%
+  kbl(caption = "Players who are favored by all stats") %>%
+  kable_styling()
+```
+
+## Conclusion
+
+It's possible that my method is terrible too (if you think it is, please let me know!). But the thing I want to emphasize: if you know you want to re-predict on your training set, DO NOT perform a "test-train" split on your training set.
